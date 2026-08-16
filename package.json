@@ -14,7 +14,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/<your-name>/dsh-deepseek-quota.git"
+    "url": "git+https://github.com/ErrorLst/dsh-deepseek-quota.git"
   },
   "type": "module",
   "main": "lib/index.js",
