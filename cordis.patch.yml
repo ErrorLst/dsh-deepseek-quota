@@ -1,0 +1,6 @@
+# dsh bundle layer: mount the host half (lib/index.js via the package root
+# export). The package also declares dsh.client, so the client-modules service
+# serves lib/client.js into the browser boot graph automatically.
+- insert:
+    - id: deepseek-quota
+      name: dsh-deepseek-quota
