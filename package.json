@@ -1,5 +1,5 @@
 {
-  "name": "dsh-deepseek-quota",
+  "name": "@dsh-external/dsh-deepseek-quota",
   "version": "0.1.0",
   "description": "DeepSeek Harness bundle plugin: real-time DeepSeek API balance in the sidebar footer",
   "keywords": [
@@ -10,7 +10,7 @@
     "plugin",
     "cordis"
   ],
-  "author": "dsh-deepseek-quota contributors",
+  "author": "@dsh-external/dsh-deepseek-quota contributors",
   "license": "MIT",
   "repository": {
     "type": "git",

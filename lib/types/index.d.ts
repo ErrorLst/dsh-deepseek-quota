@@ -1,5 +1,5 @@
 /**
- * dsh-deepseek-quota — host half type declarations.
+ * @dsh-external/dsh-deepseek-quota — host half type declarations.
  *
  * The runtime entry is plain JavaScript (`lib/index.js`); these declarations
  * only describe its public surface for editors and TypeScript consumers.

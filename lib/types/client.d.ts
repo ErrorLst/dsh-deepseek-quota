@@ -1,5 +1,5 @@
 /**
- * dsh-deepseek-quota — browser half type declarations.
+ * @dsh-external/dsh-deepseek-quota — browser half type declarations.
  *
  * The client bundle (`lib/client.js`) is served raw by the client-modules
  * system and registers itself through the browser module loader; this file

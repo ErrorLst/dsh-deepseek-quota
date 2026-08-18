@@ -1,4 +1,4 @@
-# dsh-deepseek-quota
+# @dsh-external/dsh-deepseek-quota
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) bundle
 插件：在 Web 界面侧边栏底部实时显示 DeepSeek API 账户余额。
@@ -37,7 +37,7 @@ dsh plugin --profile web add git+https://github.com/ErrorLst/dsh-deepseek-quota.
 ```
 
 然后确保 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles` 中列有
-`"dsh-deepseek-quota"`（Web 界面自带的插件管理器会自动登记 bundle 层；裸 CLI
+`"@dsh-external/dsh-deepseek-quota"`（Web 界面自带的插件管理器会自动登记 bundle 层；裸 CLI
 只是转发 pnpm，需要手动加）。重启 `dsh web`。
 
 ### 本地目录安装（开发调试）
@@ -51,13 +51,13 @@ dsh plugin --profile web add file:C:/path/to/dsh-deepseek-quota
 ### 从 npm 安装（发布后）
 
 ```sh
-dsh plugin --profile web add dsh-deepseek-quota
+dsh plugin --profile web add @dsh-external/dsh-deepseek-quota
 ```
 
 ### 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-deepseek-quota
+dsh plugin --profile web remove @dsh-external/dsh-deepseek-quota
 ```
 
 并从 profile 的 `package.json` 的 `dsh.profile.bundles` 中移除该名称。

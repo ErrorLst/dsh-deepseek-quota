@@ -1,4 +1,4 @@
-// dsh-deepseek-quota — host half smoke tests (node:test, zero dependencies).
+// @dsh-external/dsh-deepseek-quota — host half smoke tests (node:test, zero dependencies).
 //
 // Covers the plugin surface (name/inject), the route registration, and the
 // handler's main behaviors with a stubbed global fetch: missing key, success

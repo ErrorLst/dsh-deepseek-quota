@@ -3,4 +3,4 @@
 # serves lib/client.js into the browser boot graph automatically.
 - insert:
     - id: deepseek-quota
-      name: dsh-deepseek-quota
+      name: '@dsh-external/dsh-deepseek-quota'
