@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-08-19
+
+### Changed
+
+- Hourly / daily balance records are now solidified on a **time threshold**
+  instead of wall-clock bucketing: a new record is committed only when at
+  least 1 hour (or 1 day) has elapsed since the previous record, so every
+  delta covers a genuine >= 1h / >= 1d window. Both tabs lead with a live
+  "截至当前" row that updates on every 5-minute refresh and shows the change
+  since the last solidified record. Committed lists keep 9 entries so the
+  live row plus records still fill the fixed 10-row panel.
+
 ## [0.4.4] - 2026-08-19
 
 ### Added
