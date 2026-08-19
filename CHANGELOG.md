@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-08-19
+
+### Added
+
+- Balance detail panel is now tabbed: 每 5 分钟 (per-refresh deltas), 每 1
+  小时 (per-hour deltas between each hour's closing balance), and 每 1 天
+  (per-day deltas), each fixed at 10 rows without a scrollbar. Hourly/daily
+  buckets are maintained incrementally by the balance store and persisted
+  with the snapshot.
+
 ## [0.4.3] - 2026-08-19
 
 ### Added

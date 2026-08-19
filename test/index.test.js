@@ -435,6 +435,10 @@ test("context route reports session, latest turn, and subagent spend", async () 
   assert.equal(Math.round(body.turn.requests[0].costUncachedInput * 1e6), 1500);
   assert.equal(Math.round(body.turn.requests[0].costCacheRead * 1e6), 0);
   assert.equal(Math.round(body.turn.requests[0].costOutput * 1e6), 2250);
+  // Turn-level bucket costs (total row) must match the request sum.
+  assert.equal(Math.round(body.turn.costUncachedInput * 1e6), 1500);
+  assert.equal(Math.round(body.turn.costCacheRead * 1e6), 0);
+  assert.equal(Math.round(body.turn.costOutput * 1e6), 2250);
   assert.equal(body.turn.requestsTruncated, false);
 
   // Subagents: A = 100*1.5 + 50*4.5 = 375 → 0.000375; B = 200*1.5 + 100*4.5 = 750 → 0.00075

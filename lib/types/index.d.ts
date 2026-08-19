@@ -184,6 +184,10 @@ export type ContextQuotaResponse =
       turn: {
         turn: number;
         cost: number;
+        costUncachedInput: number;
+        costCacheRead: number;
+        costCacheWrite: number;
+        costOutput: number;
         uncachedInputTokens: number;
         cacheReadTokens: number;
         cacheWriteTokens: number;
