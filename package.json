@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-deepseek-quota",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness bundle plugin: real-time DeepSeek API balance in the sidebar footer",
+  "version": "0.4.3",
+  "description": "DeepSeek Harness bundle plugin: DeepSeek balance and per-conversation spend (session / turn / subagents) in a line under the composer stats",
   "keywords": [
     "dsh",
     "deepseek",
@@ -49,8 +49,7 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-runtime"
       ]
     }
   }

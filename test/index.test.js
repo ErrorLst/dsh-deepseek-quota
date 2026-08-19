@@ -1,21 +1,46 @@
 // @dsh-external/dsh-deepseek-quota — host half smoke tests (node:test, zero dependencies).
 //
-// Covers the plugin surface (name/inject), the route registration, and the
-// handler's main behaviors with a stubbed global fetch: missing key, success
-// normalization, auth failure, method rejection, and the TTL cache with the
-// `refresh=1` bypass.
+// Covers the plugin surface (name/inject), both route registrations, the
+// balance handler with a stubbed global fetch (missing key, success
+// normalization, auth failure, method rejection, TTL cache + refresh=1),
+// the pricing helpers (peak/off-peak windows, tier resolution), the durable
+// usage fold (per-step last-wins, per-turn aggregation, seed skipping), and
+// the context route end-to-end with stubbed session/subagent services.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { name, inject, apply } from "../lib/index.js";
+import { name, inject, apply, foldSessionUsage, isPeak, normalizePricing, resolveTier } from "../lib/index.js";
 
-/** Minimal Cordis-like context: captures the registered route, no credentials service. */
+/** Minimal Cordis-like context: captures the registered routes. */
 function makeCtx() {
   const routes = [];
   return {
     ctx: {
       get: () => undefined,
+      webServer: {
+        register(desc) {
+          routes.push(desc);
+          return () => {};
+        },
+      },
+      effect: (fn) => fn(),
+    },
+    routes,
+  };
+}
+
+/** Context whose `get` dispatches on service name. */
+function makeServiceCtx({ sessions, subagents, persistence }) {
+  const routes = [];
+  return {
+    ctx: {
+      get: (service) => {
+        if (service === "sessions") return sessions === undefined ? undefined : { list: () => sessions };
+        if (service === "subagents") return subagents;
+        if (service === "sessionPersistence") return persistence;
+        return undefined;
+      },
       webServer: {
         register(desc) {
           routes.push(desc);
@@ -84,20 +109,51 @@ const BALANCE_PAYLOAD = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Session-log event builders
+// ---------------------------------------------------------------------------
+
+function headerEvent(model, provider = "deepseek", seq = 0) {
+  return { type: "request/header", seq, time: 0, data: { header: { config: { provider, model } } } };
+}
+
+function usageMessageEvent(seq, turn, step, usage, time) {
+  return { type: "assistant/message", seq, time, data: { turn, step, usage } };
+}
+
+function usageChunkEvent(seq, turn, step, usage, time) {
+  return { type: "assistant/chunk", seq, time, data: { turn, step, chunk: { type: "usage", usage } } };
+}
+
+// 2026-08-17 02:00 UTC = 10:00 北京（高峰）；12:00 UTC = 20:00 北京（空闲）。
+const PEAK_MS = Date.UTC(2026, 7, 17, 2, 0, 0);
+const OFFPEAK_MS = Date.UTC(2026, 7, 17, 12, 0, 0);
+
+// ---------------------------------------------------------------------------
+// Plugin surface
+// ---------------------------------------------------------------------------
+
 test("plugin surface declares the expected identity", () => {
   assert.equal(name, "deepseek-quota");
   assert.deepEqual(inject, ["webServer"]);
 });
 
-test("apply registers the exact route /api/deepseek-quota", () => {
+test("apply registers both routes", () => {
   const { ctx, routes } = makeCtx();
   apply(ctx);
-  assert.equal(routes.length, 1);
+  assert.equal(routes.length, 2);
   assert.deepEqual(
-    { kind: routes[0].kind, path: routes[0].path },
-    { kind: "exact", path: "/api/deepseek-quota" },
+    routes.map((route) => ({ kind: route.kind, path: route.path })).sort((a, b) => a.path.localeCompare(b.path)),
+    [
+      { kind: "exact", path: "/api/deepseek-quota" },
+      { kind: "exact", path: "/api/deepseek-quota/context" },
+    ],
   );
 });
+
+// ---------------------------------------------------------------------------
+// Balance route
+// ---------------------------------------------------------------------------
 
 test("responds MISSING_KEY when no credentials service and no env key", async () => {
   await withEnv("DEEPSEEK_API_KEY", undefined, async () => {
@@ -195,4 +251,356 @@ test("serves the cached body within the TTL and refreshes on refresh=1", async (
       assert.equal(JSON.parse(fresh.body).ok, true);
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Pricing helpers
+// ---------------------------------------------------------------------------
+
+test("peak windows follow Beijing time: 09–12 and 14–18 are peak, else off-peak", () => {
+  // 2026-08-17 UTC hours → Beijing = UTC + 8
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 0, 59, 59)), false, "08:59 北京 空闲");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 2, 0, 0)), true, "09:00 北京 高峰");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 3, 59, 59)), true, "11:59 北京 高峰");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 4, 0, 0)), false, "12:00 北京 空闲");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 5, 59, 59)), false, "13:59 北京 空闲");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 6, 0, 0)), true, "14:00 北京 高峰");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 9, 59, 59)), true, "17:59 北京 高峰");
+  assert.equal(isPeak(Date.UTC(2026, 7, 17, 10, 0, 0)), false, "18:00 北京 空闲");
+});
+
+test("tier resolution maps model ids onto the official tiers", () => {
+  const pricing = normalizePricing(undefined);
+  assert.equal(resolveTier("deepseek-chat", pricing), "deepseek-chat");
+  assert.equal(resolveTier("deepseek-v4-flash", pricing), "deepseek-chat");
+  assert.equal(resolveTier("deepseek-reasoner", pricing), "deepseek-reasoner");
+  assert.equal(resolveTier("deepseek-v4-pro", pricing), "deepseek-reasoner");
+  assert.equal(resolveTier("some-other-model", pricing), "deepseek-chat", "unknown falls back");
+});
+
+// ---------------------------------------------------------------------------
+// Usage fold
+// ---------------------------------------------------------------------------
+
+test("fold prices peak and off-peak samples with the official rates", () => {
+  const pricing = normalizePricing(undefined);
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 500 }, PEAK_MS),
+    usageMessageEvent(2, 1, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS),
+  ];
+  const folded = foldSessionUsage(events, 0, pricing);
+  // 高峰: 1000*3.0 + 2000*0.10 + 500*9.0 = 7700 → 0.0077
+  // 空闲: 1000*1.5 + 500*4.5 = 3750 → 0.00375
+  assert.equal(folded.currentTurn, 1);
+  assert.equal(folded.totals.uncachedInput, 2000);
+  assert.equal(folded.totals.cacheRead, 2000);
+  assert.equal(folded.totals.output, 1000);
+  assert.equal(Math.round(folded.totals.cost * 1e6), 7700 + 3750);
+  assert.equal(Math.round(folded.byTurn.get(0).cost * 1e6), 7700);
+  assert.equal(Math.round(folded.byTurn.get(1).cost * 1e6), 3750);
+  assert.equal(folded.model, "deepseek-chat");
+});
+
+test("fold keeps only the last usage sample per (turn, step)", () => {
+  const pricing = normalizePricing(undefined);
+  const events = [
+    headerEvent("deepseek-reasoner"),
+    usageChunkEvent(1, 0, 0, { inputTokens: 900, outputTokens: 100 }, PEAK_MS),
+    usageMessageEvent(2, 0, 0, { inputTokens: 1000, outputTokens: 200 }, PEAK_MS),
+  ];
+  const folded = foldSessionUsage(events, 0, pricing);
+  assert.equal(folded.totals.uncachedInput, 1000, "early chunk sample must be replaced");
+  assert.equal(folded.totals.output, 200);
+  assert.equal(folded.totals.samples, 1);
+});
+
+test("fold skips the inherited seed prefix of child sessions", () => {
+  const pricing = normalizePricing(undefined);
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 5000, outputTokens: 1000 }, PEAK_MS), // seed (parent's usage)
+    usageMessageEvent(2, 1, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS), // child's own
+  ];
+  const folded = foldSessionUsage(events, 2, pricing);
+  assert.equal(folded.totals.uncachedInput, 100, "seed usage must not be counted");
+  assert.equal(folded.totals.output, 50);
+  assert.equal(folded.currentTurn, 1);
+});
+
+test("reasoner tier applies pro rates", () => {
+  const pricing = normalizePricing(undefined);
+  const events = [
+    headerEvent("deepseek-reasoner"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, PEAK_MS),
+  ];
+  const folded = foldSessionUsage(events, 0, pricing);
+  // 高峰 Pro: 1000*9.0 + 500*27.0 = 22500 → 0.0225
+  assert.equal(Math.round(folded.totals.cost * 1e6), 22500);
+});
+
+// ---------------------------------------------------------------------------
+// Context route
+// ---------------------------------------------------------------------------
+
+test("context route answers MISSING_SESSION without a sessionId", async () => {
+  const { ctx, routes } = makeServiceCtx({ sessions: [] });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, "MISSING_SESSION");
+});
+
+test("context route answers SESSION_NOT_FOUND for an unknown id", async () => {
+  const { ctx, routes } = makeServiceCtx({ sessions: [] });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=nope" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, "SESSION_NOT_FOUND");
+});
+
+test("context route reports session, latest turn, and subagent spend", async () => {
+  const mainEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 500 }, PEAK_MS),
+    usageMessageEvent(2, 1, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS),
+  ];
+  const childAEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  // Child B inherits a parent-history seed whose usage must be skipped.
+  const childBEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 5000, outputTokens: 1000 }, PEAK_MS),
+    usageMessageEvent(2, 1, 0, { inputTokens: 200, outputTokens: 100 }, OFFPEAK_MS),
+  ];
+  const sessions = [
+    { header: { id: "main", seedLength: 0 }, events: mainEvents },
+    { header: { id: "child-a", seedLength: 0 }, events: childAEvents },
+    { header: { id: "child-b", seedLength: 2 }, events: childBEvents },
+  ];
+  const subagents = {
+    listDescendants: async () => [
+      { kind: "child", id: "child-a", label: "A" },
+      { kind: "child", id: "child-b" },
+    ],
+  };
+
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.currency, "CNY");
+  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-17");
+
+  // Session: 高峰 0.0077 + 空闲 0.00375 = 0.01145
+  assert.equal(Math.round(body.session.cost * 1e6), 11450);
+  assert.equal(body.session.uncachedInputTokens, 2000);
+  assert.equal(body.session.cacheReadTokens, 2000);
+  assert.equal(body.session.outputTokens, 1000);
+  assert.equal(body.session.model, "deepseek-chat");
+  assert.equal(body.session.tier, "deepseek-chat");
+
+  // Per-model breakdown: one tier with the whole session cost, split by bucket.
+  // flash peak: 1000*3.0=3000, 2000*0.10=200, 500*9.0=4500; off-peak: 1000*1.5=1500, 500*4.5=2250
+  assert.equal(body.session.models.length, 1);
+  assert.equal(body.session.models[0].tier, "deepseek-chat");
+  assert.equal(Math.round(body.session.models[0].cost * 1e6), 11450);
+  assert.equal(body.session.models[0].steps, 2);
+  assert.equal(Math.round(body.session.models[0].costUncachedInput * 1e6), 4500);
+  assert.equal(Math.round(body.session.models[0].costCacheRead * 1e6), 200);
+  assert.equal(Math.round(body.session.models[0].costOutput * 1e6), 6750);
+  // Session-level bucket costs must match the model row.
+  assert.equal(Math.round(body.session.costUncachedInput * 1e6), 4500);
+  assert.equal(Math.round(body.session.costCacheRead * 1e6), 200);
+  assert.equal(Math.round(body.session.costOutput * 1e6), 6750);
+
+  // Latest turn = 1 → 0.00375, with per-request detail.
+  assert.equal(body.turn.turn, 1);
+  assert.equal(Math.round(body.turn.cost * 1e6), 3750);
+  assert.equal(body.turn.requests.length, 1);
+  assert.equal(body.turn.requests[0].step, 0);
+  assert.equal(body.turn.requests[0].peak, false, "off-peak sample must be flagged");
+  assert.equal(body.turn.requests[0].model, "deepseek-chat");
+  assert.equal(Math.round(body.turn.requests[0].cost * 1e6), 3750);
+  // Per-request bucket costs: 1000*1.5=1500, 500*4.5=2250 (off-peak).
+  assert.equal(Math.round(body.turn.requests[0].costUncachedInput * 1e6), 1500);
+  assert.equal(Math.round(body.turn.requests[0].costCacheRead * 1e6), 0);
+  assert.equal(Math.round(body.turn.requests[0].costOutput * 1e6), 2250);
+  assert.equal(body.turn.requestsTruncated, false);
+
+  // Subagents: A = 100*1.5 + 50*4.5 = 375 → 0.000375; B = 200*1.5 + 100*4.5 = 750 → 0.00075
+  assert.equal(body.subagents.count, 2);
+  assert.equal(Math.round(body.subagents.cost * 1e6), 1125);
+  assert.equal(body.subagents.children.length, 2);
+  const childA = body.subagents.children.find((child) => child.id === "child-a");
+  assert.equal(childA.label, "A");
+  assert.equal(Math.round(childA.cost * 1e6), 375);
+  assert.equal(childA.tier, "deepseek-chat");
+  assert.equal(childA.steps, 1);
+  // Child A bucket costs (off-peak): 100*1.5=150, 50*4.5=225.
+  assert.equal(Math.round(childA.costUncachedInput * 1e6), 150);
+  assert.equal(Math.round(childA.costCacheRead * 1e6), 0);
+  assert.equal(Math.round(childA.costOutput * 1e6), 225);
+  const childB = body.subagents.children.find((child) => child.id === "child-b");
+  assert.equal(Math.round(childB.cost * 1e6), 750, "child seed usage must not double count");
+});
+
+test("context route splits session spend per model tier after a mid-session switch", async () => {
+  const events = [
+    headerEvent("deepseek-v4-flash"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, cacheReadTokens: 2000, outputTokens: 500 }, PEAK_MS),
+    headerEvent("deepseek-v4-pro"),
+    usageMessageEvent(2, 1, 0, { inputTokens: 100, outputTokens: 50 }, PEAK_MS),
+  ];
+  const sessions = [{ header: { id: "main", seedLength: 0 }, events }];
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  // flash: 1000*3.0 + 2000*0.10 + 500*9.0 = 7700; pro: 100*9.0 + 50*27.0 = 2250
+  assert.equal(body.session.models.length, 2);
+  const flash = body.session.models.find((entry) => entry.tier === "deepseek-chat");
+  const pro = body.session.models.find((entry) => entry.tier === "deepseek-reasoner");
+  assert.equal(Math.round(flash.cost * 1e6), 7700);
+  assert.equal(flash.model, "deepseek-v4-flash");
+  assert.equal(Math.round(pro.cost * 1e6), 2250);
+  assert.equal(pro.model, "deepseek-v4-pro");
+  assert.equal(Math.round(body.session.cost * 1e6), 9950, "models must sum to the session total");
+  // Latest turn (1) is the pro request.
+  assert.equal(body.turn.requests.length, 1);
+  assert.equal(body.turn.requests[0].tier, "deepseek-reasoner");
+});
+
+test("context route tolerates a missing subagents service", async () => {
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const sessions = [{ header: { id: "main", seedLength: 0 }, events }];
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.subagents.count, 0);
+  assert.equal(Math.round(body.subagents.cost * 1e6), 0);
+  assert.equal(Math.round(body.session.cost * 1e6), 375);
+});
+
+test("non-DeepSeek subagents are unpriced and excluded from the total", async () => {
+  const events = [headerEvent("deepseek-chat")];
+  const childDeepseekEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const childOtherEvents = [
+    headerEvent("gpt-4o", "openai"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS),
+  ];
+  const sessions = [
+    { header: { id: "main", seedLength: 0 }, events },
+    { header: { id: "child-ds", seedLength: 0 }, events: childDeepseekEvents },
+    { header: { id: "child-other", seedLength: 0 }, events: childOtherEvents },
+  ];
+  const subagents = {
+    listDescendants: async () => [
+      { kind: "child", id: "child-ds" },
+      { kind: "child", id: "child-other" },
+    ],
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.subagents.count, 2);
+  assert.equal(body.subagents.unpricedCount, 1);
+  // Only the DeepSeek child contributes: 100*1.5 + 50*4.5 = 375.
+  assert.equal(Math.round(body.subagents.cost * 1e6), 375);
+  const other = body.subagents.children.find((child) => child.id === "child-other");
+  assert.equal(other.unpriced, true);
+  assert.equal(other.cost, null);
+  assert.equal(other.uncachedInputTokens, 0, "unpriced rows must not leak tokens");
+  const ds = body.subagents.children.find((child) => child.id === "child-ds");
+  assert.equal(ds.unpriced, false);
+  assert.equal(Math.round(ds.cost * 1e6), 375);
+});
+
+test("a freshly started turn with no usage yet reports an empty turn", async () => {
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+    { type: "turn/start", seq: 2, time: OFFPEAK_MS, data: { turn: 1 } },
+  ];
+  const sessions = [{ header: { id: "main", seedLength: 0 }, events }];
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.turn, null, "a started-but-empty turn must not replay the previous turn");
+  // Session totals stay untouched.
+  assert.equal(Math.round(body.session.cost * 1e6), 375);
+});
+
+test("the current turn is reported once it produces usage", async () => {
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+    { type: "turn/start", seq: 2, time: OFFPEAK_MS, data: { turn: 1 } },
+    usageMessageEvent(3, 1, 0, { inputTokens: 200, outputTokens: 100 }, OFFPEAK_MS),
+  ];
+  const sessions = [{ header: { id: "main", seedLength: 0 }, events }];
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.turn.turn, 1);
+  assert.equal(Math.round(body.turn.cost * 1e6), 750, "200*1.5 + 100*4.5 (off-peak)");
+});
+
+test("context route serves the per-session cache and refresh=1 bypasses it", async () => {
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const sessions = [{ header: { id: "main", seedLength: 0 }, events }];
+  let listings = 0;
+  const subagents = {
+    listDescendants: async () => {
+      listings += 1;
+      return [];
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+
+  const first = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  assert.equal(JSON.parse(first.body).ok, true);
+  assert.equal(listings, 1, "first call must compute");
+
+  const cached = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main" });
+  assert.equal(JSON.parse(cached.body).ok, true);
+  assert.equal(listings, 1, "second call within the TTL must hit the cache");
+
+  const fresh = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main&refresh=1" });
+  assert.equal(JSON.parse(fresh.body).ok, true);
+  assert.equal(listings, 2, "refresh=1 must bypass the cache");
 });

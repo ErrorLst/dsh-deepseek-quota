@@ -7,6 +7,36 @@
  * the package stays dependency-free.
  */
 
+/** One pricing band (元 / 百万 tokens). */
+export interface PricingBand {
+  /** Input tokens served from DeepSeek's disk cache (`prompt_cache_hit_tokens`). */
+  cacheHit: number;
+  /** Uncached input tokens (`prompt_cache_miss_tokens`). */
+  cacheMiss: number;
+  /** Output (completion) tokens, reasoning included. */
+  output: number;
+}
+
+/** Peak/off-peak rates for one model tier. */
+export interface PricingTier {
+  /** 高峰时段 09:00–12:00 与 14:00–18:00（北京时间）。 */
+  peak: PricingBand;
+  /** 其余空闲时段（官方定价 = 高峰的一半）。 */
+  offpeak: PricingBand;
+}
+
+/** Rate table override accepted under `config.pricing`. */
+export interface PricingConfig {
+  /** Free-form version tag surfaced in API responses. */
+  version?: string;
+  /** Currency code. Defaults to `CNY`. */
+  currency?: string;
+  /** Per-tier rates; entries deep-merge over the official defaults. */
+  tiers?: Record<string, PricingTier>;
+  /** Tier used for unrecognized model ids. Defaults to `deepseek-chat`. */
+  fallbackTier?: string;
+}
+
 /** Configuration accepted by the `deepseek-quota` row (set via a patch layer). */
 export interface QuotaConfig {
   /**
@@ -18,6 +48,18 @@ export interface QuotaConfig {
   ttlMs?: number;
   /** Positive outbound request timeout in milliseconds. Defaults to `15000`. */
   timeoutMs?: number;
+  /**
+   * Budget for one `/api/deepseek-quota/context` computation (cold subagent
+   * reads included). Defaults to `8000`.
+   */
+  contextTimeoutMs?: number;
+  /**
+   * Short TTL for the per-session context-route cache (ms), so session
+   * switches render instantly. `refresh=1` bypasses it. Defaults to `5000`.
+   */
+  contextCacheTtlMs?: number;
+  /** Rate table override (official DeepSeek-V4 peak/off-peak rates by default). */
+  pricing?: PricingConfig;
 }
 
 /** One currency entry of the DeepSeek balance response. */
@@ -42,6 +84,129 @@ export type QuotaResponse =
       code: string;
       message: string;
       status?: number;
+    };
+
+/** Usage buckets of one session or turn (provider-reported tokens). */
+export interface UsageTotals {
+  cost: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  steps: number;
+  model?: string | null;
+  provider?: string | null;
+}
+
+/** One descendant subagent's spend. */
+export interface SubagentSpend {
+  id: string;
+  label?: string;
+  cost: number | null;
+  /** 输入（缓存未命中）的折算金额；非 DeepSeek 子代理为 null。 */
+  costUncachedInput: number | null;
+  costCacheRead: number | null;
+  costCacheWrite: number | null;
+  costOutput: number | null;
+  /** True when the subagent ran a non-DeepSeek model and is not priced. */
+  unpriced: boolean;
+  steps: number;
+  tier: string | null;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  model: string | null;
+  provider: string | null;
+}
+
+/** One model tier's aggregate spend inside the session. */
+export interface SessionModelSpend {
+  tier: string;
+  model: string | null;
+  cost: number;
+  /** 输入（缓存未命中）的折算金额。 */
+  costUncachedInput: number;
+  /** 缓存输入（命中）的折算金额。 */
+  costCacheRead: number;
+  costCacheWrite: number;
+  /** 输出的折算金额。 */
+  costOutput: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  steps: number;
+}
+
+/** One request (step) of the latest turn, with its own price. */
+export interface TurnRequestSpend {
+  step: number;
+  time: number;
+  model: string | null;
+  tier: string;
+  /** Whether the request fell in a Beijing-time peak window. */
+  peak: boolean;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  cost: number;
+  /** 输入（缓存未命中）的折算金额。 */
+  costUncachedInput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
+  costOutput: number;
+}
+
+/** Normalized JSON body served at `GET /api/deepseek-quota/context?sessionId=…`. */
+export type ContextQuotaResponse =
+  | {
+      ok: true;
+      currency: string;
+      pricingVersion: string;
+      session: {
+        cost: number;
+        costUncachedInput: number;
+        costCacheRead: number;
+        costCacheWrite: number;
+        costOutput: number;
+        uncachedInputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        outputTokens: number;
+        model: string | null;
+        provider: string | null;
+        tier: string | null;
+        steps: number;
+        models: SessionModelSpend[];
+      };
+      turn: {
+        turn: number;
+        cost: number;
+        uncachedInputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        outputTokens: number;
+        steps: number;
+        requests: TurnRequestSpend[];
+        requestsTruncated?: boolean;
+      } | null;
+      subagents: {
+        cost: number;
+        count: number;
+        /** How many children ran a non-DeepSeek model (shown as "-"). */
+        unpricedCount?: number;
+        error?: string;
+        children: SubagentSpend[];
+      };
+      computedAt: number;
+    }
+  | {
+      ok: false;
+      /** `MISSING_SESSION` | `SESSION_NOT_FOUND` | `INTERNAL`. */
+      code: string;
+      message: string;
     };
 
 /** Minimal structural view of the parts of the Cordis context this plugin uses. */
