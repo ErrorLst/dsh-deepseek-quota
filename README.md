@@ -68,12 +68,14 @@
 ### 从 Git 仓库安装
 
 ```sh
-dsh plugin --profile web add git+https://github.com/ErrorLst/dsh-deepseek-quota.git
+dsh plugin --profile web add github:ErrorLst/dsh-deepseek-quota
 ```
 
-然后确保 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles` 中列有
-`"@dsh-external/dsh-deepseek-quota"`（Web 界面自带的插件管理器会自动登记 bundle 层；裸 CLI
-只是转发 pnpm，需要手动加）。重启 `dsh web`。
+（`git+https://github.com/ErrorLst/dsh-deepseek-quota.git` 同样有效。）
+
+dsh 0.1.0-rc.7 及以后版本在 `dsh plugin add` 成功后会自动 reconcile，把声明了
+`dsh.bundle.patch` 的包自动登记进 `dsh.profile.bundles`，无需手动编辑 profile 的
+`package.json`；仅旧版本 dsh 才需要手动登记。重启 `dsh web`。
 
 ### 本地目录安装（开发调试）
 
@@ -86,7 +88,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-deepseek-quota
 （表现为主机端新路由 404、界面没有新功能）；`link:` 让 `node_modules` 直接指向
 插件目录，改动即时可见——宿主端改动重启 `dsh web` 生效，浏览器端改动刷新页面即可。
 
-同样完成上述 bundle 层登记后重启。
+rc.7 及以后版本同样会自动 reconcile 登记 bundle 层，无需手动编辑；重启 `dsh web` 即可。
 
 ### 从 npm 安装（发布后）
 
@@ -100,7 +102,8 @@ dsh plugin --profile web add @dsh-external/dsh-deepseek-quota
 dsh plugin --profile web remove @dsh-external/dsh-deepseek-quota
 ```
 
-并从 profile 的 `package.json` 的 `dsh.profile.bundles` 中移除该名称。
+rc.7 及以后版本会自动 reconcile，从 `dsh.profile.bundles` 中移除该名称，无需手动
+编辑 profile 的 `package.json`；仅旧版本 dsh 才需要手动移除。
 
 ## 使用
 
