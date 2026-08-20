@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-21
+
+### Added
+
+- **「变化量（当前API）」列现在有真实数值了**：新增宿主路由
+  `GET /api/deepseek-quota/spend?boundaries=<ms1,ms2,…>`，重放**所有会话**
+  （在线 + 持久化，按 id 去重；子代理日志的父会话继承前缀从 seed 边界跳过，
+  绝不重复计费）的持久日志，仅统计 DeepSeek 模型样本，按峰谷价目表在每一
+  个边界时间戳返回**自日志起始的累计消耗**；任意窗口消耗 =
+  `end.cost - start.cost`。浏览器端每次余额刷新后一次性请求余额明细表所需的
+  全部边界（逐次刷新、每 1 小时、每 1 天三个视图 + 实时「截至当前」），逐行
+  填出该窗口内 DSH 所有会话的 DeepSeek 消耗（红色负值）；窗口无法计价时仍
+  显示 `-`。消耗曲线随余额快照一起持久化在 localStorage，刷新页面即时恢复。
+- 全局样本折叠按 `spendCacheTtlMs`（默认 60 秒）缓存，边界查询
+  O(样本数 + 边界数)；受 `contextTimeoutMs` 预算与 512 会话上限约束，超限时
+  返回 `partial: true` 的偏小数值而非失败。
+
+## [0.4.6] - 2026-08-20
+
+### Added
+
+- 余额明细表的变化量列拆分为 `变化量（总）` 与 `变化量（当前API）` 两列，
+  用于区分账户总余额的变化与当前 API 的消耗变化（即 DSH 所有会话的总消耗）。
+  后者暂不计算实际数值、始终显示 `-`，为后续全量会话消耗统计预留。
+
 ## [0.4.5] - 2026-08-19
 
 ### Changed

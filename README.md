@@ -20,7 +20,12 @@
     刷新变化量）、`每 1 小时` / `每 1 天`（**时间阈值固化**——距上次记录
     满 1 小时/1 天才固化一条，首行"截至当前"随每次 5 分钟刷新实时更新并
     显示距上次固化点的变化），每个视图固定 10 行无滚动条，并显示赠金/充值
-    信息。余额快照与三类历史**持久化在浏览器 localStorage**，刷新页面后
+    信息；明细表的**变化量**拆分为两列：`变化量（总）`（账户总余额的变化）
+    与 `变化量（当前API）`（当前 API 的消耗变化，即该时间窗口内 **DSH 所有
+    会话**的 DeepSeek 用量消耗——由宿主端重放全部会话的持久日志、按同一峰谷
+    价目表计价，同一窗口内 `变化量（当前API）` 与 `变化量（总）` 的差额即
+    其他 API 的消耗与充值等非用量变化）。余额快照、三类历史与全局消耗曲线
+    **持久化在浏览器 localStorage**，刷新页面后
     即时恢复；
   - **当前会话**：整个会话日志累计消耗（跨轮次、跨工具步骤）；
   - **本轮对话**：最新一轮（含该轮全部步骤）的消耗，流式输出期间实时增长；
@@ -118,6 +123,7 @@ rc.7 及以后版本会自动 reconcile，从 `dsh.profile.bundles` 中移除该
 curl http://127.0.0.1:3080/api/deepseek-quota
 curl http://127.0.0.1:3080/api/deepseek-quota?refresh=1
 curl "http://127.0.0.1:3080/api/deepseek-quota/context?sessionId=<session-id>"
+curl "http://127.0.0.1:3080/api/deepseek-quota/spend?boundaries=<ms1>,<ms2>"
 ```
 
 ## HTTP API
@@ -144,6 +150,36 @@ curl "http://127.0.0.1:3080/api/deepseek-quota/context?sessionId=<session-id>"
 ```
 
 `GET /api/deepseek-quota?refresh=1` 绕过 TTL 缓存；非 GET 请求返回 `405`。
+
+### ### `GET /api/deepseek-quota/spend?boundaries=<ms1,ms2,…>`
+
+跨 **所有会话**（在线 + 持久化，按 id 去重、子代理种子前缀不重复计费）的
+DeepSeek 总消耗曲线：在每一个边界时间戳处返回**自全部日志起始的累计消耗**
+（仅统计 DeepSeek 模型样本；其他提供方的用量永不按 DeepSeek 计价）。任意
+窗口 `(start, end]` 的消耗 = `boundaries[end].cost - boundaries[start].cost`
+（用于余额明细表的「变化量（当前API）」列）。结果按 `spendCacheTtlMs`
+（默认 60 秒）缓存样本折叠，边界查询本身是 O(样本数 + 边界数)；超时预算或
+会话上限触发时返回 `partial: true`（数字偏小但仍有意义）。边界最多 64 个，
+非法/重复/负值边界会被丢弃。
+
+```jsonc
+{
+  "ok": true,
+  "currency": "CNY",
+  "pricingVersion": "deepseek-v4-2026-08-17",
+  "sessions": 12,
+  "samples": 341,
+  "boundaries": [
+    { "at": 1755446400000, "cost": 0.01234, "costUncachedInput": 0.0045,
+      "costCacheRead": 0.0002, "costCacheWrite": 0, "costOutput": 0.00764,
+      "uncachedInputTokens": 3000, "cacheReadTokens": 2000,
+      "cacheWriteTokens": 0, "outputTokens": 1500, "steps": 3 }
+  ],
+  "computedAt": 1755447000000
+}
+```
+
+`refresh=1` 绕过折叠缓存；非 GET 请求返回 `405`。
 
 ### `GET /api/deepseek-quota/context?sessionId=<id>`
 
@@ -202,6 +238,7 @@ curl "http://127.0.0.1:3080/api/deepseek-quota/context?sessionId=<session-id>"
 | 请求超时           | 行配置 `timeoutMs`                         | `15000`                     |
 | 额度计算预算       | 行配置 `contextTimeoutMs`                  | `8000`                      |
 | 额度路由缓存       | 行配置 `contextCacheTtlMs`                 | `5000`                      |
+| 全局消耗折叠缓存   | 行配置 `spendCacheTtlMs`                   | `60000`                     |
 | 价目表覆盖         | 行配置 `pricing`                           | 官方 DeepSeek-V4 峰谷价目表 |
 
 行配置写在 profile 的 `cordis.patch.yml`

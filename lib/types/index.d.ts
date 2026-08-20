@@ -58,6 +58,12 @@ export interface QuotaConfig {
    * switches render instantly. `refresh=1` bypasses it. Defaults to `5000`.
    */
   contextCacheTtlMs?: number;
+  /**
+   * TTL for the global-spend sample fold (ms): the priced DeepSeek sample
+   * list across ALL sessions, shared by every spend-route boundary query.
+   * `refresh=1` bypasses it. Defaults to `60000`.
+   */
+  spendCacheTtlMs?: number;
   /** Rate table override (official DeepSeek-V4 peak/off-peak rates by default). */
   pricing?: PricingConfig;
 }
@@ -209,6 +215,47 @@ export type ContextQuotaResponse =
   | {
       ok: false;
       /** `MISSING_SESSION` | `SESSION_NOT_FOUND` | `INTERNAL`. */
+      code: string;
+      message: string;
+    };
+
+/** Cumulative global DeepSeek spend at one boundary timestamp. */
+export interface SpendBoundaryRow {
+  at: number;
+  cost: number;
+  costUncachedInput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
+  costOutput: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  steps: number;
+}
+
+/** Normalized JSON body served at `GET /api/deepseek-quota/spend?boundaries=…`. */
+export type SpendQuotaResponse =
+  | {
+      ok: true;
+      currency: string;
+      pricingVersion: string;
+      /** How many sessions the global fold walked (live + persisted). */
+      sessions: number;
+      /** How many priced DeepSeek usage samples the fold produced. */
+      samples: number;
+      /**
+       * True when the fold was interrupted by the timeout budget or the
+       * session cap; the numbers then undercount.
+       */
+      partial?: boolean;
+      /** Cumulative spend at each requested boundary, in sorted order. */
+      boundaries: SpendBoundaryRow[];
+      computedAt: number;
+    }
+  | {
+      ok: false;
+      /** `INTERNAL`. */
       code: string;
       message: string;
     };

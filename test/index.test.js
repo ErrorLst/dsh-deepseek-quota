@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { name, inject, apply, foldSessionUsage, isPeak, normalizePricing, resolveTier } from "../lib/index.js";
+import { name, inject, apply, cumulativeSpend, foldSessionUsage, isPeak, normalizePricing, resolveTier } from "../lib/index.js";
 
 /** Minimal Cordis-like context: captures the registered routes. */
 function makeCtx() {
@@ -138,15 +138,16 @@ test("plugin surface declares the expected identity", () => {
   assert.deepEqual(inject, ["webServer"]);
 });
 
-test("apply registers both routes", () => {
+test("apply registers all three routes", () => {
   const { ctx, routes } = makeCtx();
   apply(ctx);
-  assert.equal(routes.length, 2);
+  assert.equal(routes.length, 3);
   assert.deepEqual(
     routes.map((route) => ({ kind: route.kind, path: route.path })).sort((a, b) => a.path.localeCompare(b.path)),
     [
       { kind: "exact", path: "/api/deepseek-quota" },
       { kind: "exact", path: "/api/deepseek-quota/context" },
+      { kind: "exact", path: "/api/deepseek-quota/spend" },
     ],
   );
 });
@@ -607,4 +608,139 @@ test("context route serves the per-session cache and refresh=1 bypasses it", asy
   const fresh = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=main&refresh=1" });
   assert.equal(JSON.parse(fresh.body).ok, true);
   assert.equal(listings, 2, "refresh=1 must bypass the cache");
+});
+
+// ---------------------------------------------------------------------------
+// Spend route (global DeepSeek spend over time, all sessions)
+// ---------------------------------------------------------------------------
+
+test("cumulativeSpend prices window deltas at requested boundaries", () => {
+  const pricing = normalizePricing(undefined);
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, PEAK_MS), // 0.0075 peak
+    usageMessageEvent(2, 1, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS), // 0.00375 off-peak
+  ];
+  const folded = foldSessionUsage(events, 0, pricing);
+  const rows = cumulativeSpend(folded.steps, pricing, [PEAK_MS - 1000, PEAK_MS + 1000, OFFPEAK_MS + 1000]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].cost, 0, "before the first sample nothing is spent");
+  assert.equal(Math.round(rows[1].cost * 1e6), 7500);
+  assert.equal(Math.round(rows[2].cost * 1e6), 11250);
+  // Window (b0, b2] is the whole session; (b0, b1] only the peak sample.
+  assert.equal(Math.round((rows[2].cost - rows[0].cost) * 1e6), 11250);
+  assert.equal(Math.round((rows[1].cost - rows[0].cost) * 1e6), 7500);
+  assert.equal(rows[2].steps, 2);
+  assert.equal(rows[2].outputTokens, 1000);
+  // Bucket cost: 500*9.0 (peak) + 500*4.5 (off-peak).
+  assert.equal(Math.round(rows[2].costOutput * 1e6), 6750);
+  assert.equal(Math.round(rows[2].costUncachedInput * 1e6), 4500, "1000*3.0 + 1000*1.5");
+});
+
+test("spend route returns cumulative DeepSeek spend across every session", async () => {
+  const mainEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, PEAK_MS), // 0.0075
+    usageMessageEvent(2, 1, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS), // 0.00375
+  ];
+  // Child with an inherited seed prefix that must be skipped.
+  const childEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 5000, outputTokens: 1000 }, PEAK_MS), // seed
+    usageMessageEvent(2, 1, 0, { inputTokens: 200, outputTokens: 100 }, OFFPEAK_MS + 60_000), // 0.00075
+  ];
+  // Another provider's session must never be priced.
+  const otherEvents = [
+    headerEvent("gpt-4o", "openai"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 10_000, outputTokens: 5_000 }, OFFPEAK_MS),
+  ];
+  // A cold persisted session (pro tier, peak).
+  const coldEvents = [
+    headerEvent("deepseek-reasoner"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, PEAK_MS), // 0.00225
+  ];
+  const sessions = [
+    { header: { id: "main", seedLength: 0 }, events: mainEvents },
+    { header: { id: "child", seedLength: 2 }, events: childEvents },
+    { header: { id: "other", seedLength: 0 }, events: otherEvents },
+  ];
+  const persistence = {
+    list: async () => [{ id: "cold", seedLength: 0 }],
+    inspect: async (id) => {
+      assert.equal(id, "cold");
+      return { meta: { id: "cold", seedLength: 0 }, events: coldEvents };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions, subagents: undefined, persistence });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const url = "/api/deepseek-quota/spend?boundaries=" +
+    [PEAK_MS - 1000, PEAK_MS + 1000, OFFPEAK_MS + 1000, OFFPEAK_MS + 120_000].join(",");
+  const res = await invoke(spend, { url });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.currency, "CNY");
+  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-17");
+  assert.equal(body.sessions, 4, "live main/child/other + persisted cold");
+  assert.equal(body.samples, 4, "main 2 + child 1 + cold 1; the openai session is excluded");
+  assert.equal(body.boundaries.length, 4);
+  assert.equal(body.boundaries[0].cost, 0, "nothing spent before the first sample");
+  // main peak (0.0075) + cold pro peak (0.00225)
+  assert.equal(Math.round(body.boundaries[1].cost * 1e6), 9750);
+  // + main off-peak (0.00375)
+  assert.equal(Math.round(body.boundaries[2].cost * 1e6), 13500);
+  // + child own usage (0.00075); seed skipped, openai never counted
+  assert.equal(Math.round(body.boundaries[3].cost * 1e6), 14250);
+  // Window (b1, b3] = off-peak + child = 0.00375 + 0.00075
+  assert.equal(Math.round((body.boundaries[3].cost - body.boundaries[1].cost) * 1e6), 4500);
+});
+
+test("spend route tolerates an empty session set and drops invalid boundaries", async () => {
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence: undefined });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const res = await invoke(spend, { url: "/api/deepseek-quota/spend?boundaries=abc,123,,123,-5,456" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.sessions, 0);
+  assert.equal(body.samples, 0);
+  assert.deepEqual(body.boundaries.map((row) => row.at), [123, 456], "invalid and duplicate boundaries are dropped");
+  assert.equal(body.boundaries.every((row) => row.cost === 0), true);
+});
+
+test("spend route serves its fold cache and refresh=1 bypasses it", async () => {
+  let listings = 0;
+  const persistence = {
+    list: async () => {
+      listings += 1;
+      return [];
+    },
+    inspect: async () => undefined,
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const url = "/api/deepseek-quota/spend?boundaries=1000";
+
+  const first = await invoke(spend, { url });
+  assert.equal(JSON.parse(first.body).ok, true);
+  assert.equal(listings, 1, "first call must enumerate");
+
+  const cached = await invoke(spend, { url });
+  assert.equal(JSON.parse(cached.body).ok, true);
+  assert.equal(listings, 1, "second call within the TTL must hit the fold cache");
+
+  const fresh = await invoke(spend, { url: url + "&refresh=1" });
+  assert.equal(JSON.parse(fresh.body).ok, true);
+  assert.equal(listings, 2, "refresh=1 must bypass the fold cache");
+});
+
+test("spend route rejects non-GET methods with 405", async () => {
+  const { ctx, routes } = makeServiceCtx({ sessions: [] });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const res = await invoke(spend, { method: "POST", url: "/api/deepseek-quota/spend" });
+  assert.equal(res.status, 405);
+  assert.equal(JSON.parse(res.body).code, "METHOD");
 });
