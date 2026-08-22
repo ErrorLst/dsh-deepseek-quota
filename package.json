@@ -37,7 +37,8 @@
     "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.1.0-rc.8"
   },
   "scripts": {
     "test": "node --test test/index.test.js"
