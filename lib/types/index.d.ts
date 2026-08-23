@@ -171,6 +171,11 @@ export type ContextQuotaResponse =
       ok: true;
       currency: string;
       pricingVersion: string;
+      /**
+       * Whether the computation moment fell in a Beijing-time peak window
+       * (weekends are all-day off-peak since 2026-08-23).
+       */
+      currentPeak: boolean;
       session: {
         cost: number;
         costUncachedInput: number;

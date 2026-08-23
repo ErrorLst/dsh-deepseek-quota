@@ -258,6 +258,22 @@ test("serves the cached body within the TTL and refreshes on refresh=1", async (
 // Pricing helpers
 // ---------------------------------------------------------------------------
 
+test("weekends are all-day off-peak since 2026-08-23 (Beijing time)", () => {
+  // 2026-08-22 (周六) 10:00 北京 — 新规则生效前：仍按原峰谷规则 → 高峰。
+  assert.equal(isPeak(Date.UTC(2026, 7, 22, 2, 0, 0)), true, "8/22 周六 10:00 北京（生效前）高峰");
+  // 2026-08-23 00:00 北京 = 2026-08-22 16:00 UTC — 新规则生效边界 → 低谷。
+  assert.equal(isPeak(Date.UTC(2026, 7, 22, 16, 0, 0)), false, "8/23 周日 00:00 北京 周末低谷");
+  // 2026-08-23 (周日) 10:00 北京 — 周末不再有高峰时段。
+  assert.equal(isPeak(Date.UTC(2026, 7, 23, 2, 0, 0)), false, "8/23 周日 10:00 北京 周末低谷");
+  // 2026-08-23 (周日) 15:00 北京 — 原 14:00–18:00 高峰窗口在周末也不生效。
+  assert.equal(isPeak(Date.UTC(2026, 7, 23, 7, 0, 0)), false, "8/23 周日 15:00 北京 周末低谷");
+  // 2026-08-29 (周六) 14:30 北京 — 同样按低谷。
+  assert.equal(isPeak(Date.UTC(2026, 7, 29, 6, 30, 0)), false, "8/29 周六 14:30 北京 周末低谷");
+  // 工作日不受影响：8/24 (周一) 10:00 北京 → 高峰；20:00 → 低谷。
+  assert.equal(isPeak(Date.UTC(2026, 7, 24, 2, 0, 0)), true, "8/24 周一 10:00 北京 高峰");
+  assert.equal(isPeak(Date.UTC(2026, 7, 24, 12, 0, 0)), false, "8/24 周一 20:00 北京 低谷");
+});
+
 test("peak windows follow Beijing time: 09–12 and 14–18 are peak, else off-peak", () => {
   // 2026-08-17 UTC hours → Beijing = UTC + 8
   assert.equal(isPeak(Date.UTC(2026, 7, 17, 0, 59, 59)), false, "08:59 北京 空闲");
@@ -274,6 +290,7 @@ test("tier resolution maps model ids onto the official tiers", () => {
   const pricing = normalizePricing(undefined);
   assert.equal(resolveTier("deepseek-chat", pricing), "deepseek-chat");
   assert.equal(resolveTier("deepseek-v4-flash", pricing), "deepseek-chat");
+  assert.equal(resolveTier("deepseek-v4-flash-vision-exp", pricing), "deepseek-chat", "vision model prices like flash");
   assert.equal(resolveTier("deepseek-reasoner", pricing), "deepseek-reasoner");
   assert.equal(resolveTier("deepseek-v4-pro", pricing), "deepseek-reasoner");
   assert.equal(resolveTier("some-other-model", pricing), "deepseek-chat", "unknown falls back");
@@ -400,7 +417,8 @@ test("context route reports session, latest turn, and subagent spend", async () 
   const body = JSON.parse(res.body);
   assert.equal(body.ok, true);
   assert.equal(body.currency, "CNY");
-  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-17");
+  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-23");
+  assert.equal(typeof body.currentPeak, "boolean", "the session panel needs the current stage");
 
   // Session: 高峰 0.0077 + 空闲 0.00375 = 0.01145
   assert.equal(Math.round(body.session.cost * 1e6), 11450);
@@ -681,7 +699,7 @@ test("spend route returns cumulative DeepSeek spend across every session", async
   const body = JSON.parse(res.body);
   assert.equal(body.ok, true);
   assert.equal(body.currency, "CNY");
-  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-17");
+  assert.equal(body.pricingVersion, "deepseek-v4-2026-08-23");
   assert.equal(body.sessions, 4, "live main/child/other + persisted cold");
   assert.equal(body.samples, 4, "main 2 + child 1 + cold 1; the openai session is excluded");
   assert.equal(body.boundaries.length, 4);
