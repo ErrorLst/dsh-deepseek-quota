@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-08-23
+
+### Changed
+
+- 额度行首列的峰谷标记改为**彩色**：高峰时段「峰」显示红色
+  （`--dsw-alias-state-error-primary`），低谷时段「谷」显示绿色
+  （`--dsw-alias-state-success-primary`），随主题样式渲染。
+
 ## [0.5.4] - 2026-08-23
 
 ### Changed
