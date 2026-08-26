@@ -64,6 +64,13 @@ export interface QuotaConfig {
    * `refresh=1` bypasses it. Defaults to `60000`.
    */
   spendCacheTtlMs?: number;
+  /**
+   * Budget for ONE global-spend fold (persisted-log reads of every session
+   * included). Larger than the context budget: a short budget aborts the
+   * fold midway and the missing sessions' usage shows as 0 in the
+   * 「变化量（当前API）」 column. Defaults to `30000`.
+   */
+  spendTimeoutMs?: number;
   /** Rate table override (official DeepSeek-V4 peak/off-peak rates by default). */
   pricing?: PricingConfig;
 }

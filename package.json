@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-deepseek-quota",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "DeepSeek Harness bundle plugin: DeepSeek balance and per-conversation spend (session / turn / subagents) in a line under the composer stats",
   "keywords": [
     "dsh",

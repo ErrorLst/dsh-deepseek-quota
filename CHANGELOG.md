@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-08-26
+
+### Fixed
+
+- **「余额明细-变化量（当前API）」出现大量 0 的根因**：全局消耗折叠复用了
+  `contextTimeoutMs`（8 秒）预算。会话多时逐个持久化读取+解析超时中断
+  （`partial: true`），漏掉的会话用量在累计曲线上没有变化，窗口差值就显示
+  为 0。修复：
+  - spend 路由改用**独立预算 `spendTimeoutMs`（默认 30 秒，可配置）**；
+  - 客户端在余额明细面板显示提示「全局统计未完整：部分会话超时未计入，
+    当前API变化量偏低」（红色），不再静默显示偏小的 0。
+- 顺带修正 README 中 spend 路由标题的重复 `###`。
+
 ## [0.5.5] - 2026-08-23
 
 ### Changed

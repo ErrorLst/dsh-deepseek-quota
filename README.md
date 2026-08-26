@@ -159,15 +159,17 @@ curl "http://127.0.0.1:3080/api/deepseek-quota/spend?boundaries=<ms1>,<ms2>"
 
 `GET /api/deepseek-quota?refresh=1` 绕过 TTL 缓存；非 GET 请求返回 `405`。
 
-### ### `GET /api/deepseek-quota/spend?boundaries=<ms1,ms2,…>`
+### `GET /api/deepseek-quota/spend?boundaries=<ms1,ms2,…>`
 
 跨 **所有会话**（在线 + 持久化，按 id 去重、子代理种子前缀不重复计费）的
 DeepSeek 总消耗曲线：在每一个边界时间戳处返回**自全部日志起始的累计消耗**
 （仅统计 DeepSeek 模型样本；其他提供方的用量永不按 DeepSeek 计价）。任意
 窗口 `(start, end]` 的消耗 = `boundaries[end].cost - boundaries[start].cost`
 （用于余额明细表的「变化量（当前API）」列）。结果按 `spendCacheTtlMs`
-（默认 60 秒）缓存样本折叠，边界查询本身是 O(样本数 + 边界数)；超时预算或
-会话上限触发时返回 `partial: true`（数字偏小但仍有意义）。边界最多 64 个，
+（默认 60 秒）缓存样本折叠，边界查询本身是 O(样本数 + 边界数)；折叠预算
+`spendTimeoutMs`（默认 30 秒，多会话持久化读取较重，别用 context 的 8 秒
+预算——超时中断会让漏掉的会话用量在窗口里显示为 0）与 512 会话上限触发时
+返回 `partial: true`（数字偏小但仍有意义，界面会提示）。边界最多 64 个，
 非法/重复/负值边界会被丢弃。
 
 ```jsonc
@@ -248,6 +250,7 @@ DeepSeek 总消耗曲线：在每一个边界时间戳处返回**自全部日志
 | 额度计算预算       | 行配置 `contextTimeoutMs`                  | `8000`                      |
 | 额度路由缓存       | 行配置 `contextCacheTtlMs`                 | `5000`                      |
 | 全局消耗折叠缓存   | 行配置 `spendCacheTtlMs`                   | `60000`                     |
+| 全局消耗折叠预算   | 行配置 `spendTimeoutMs`                     | `30000`                     |
 | 价目表覆盖         | 行配置 `pricing`                           | 官方 DeepSeek-V4 峰谷价目表 |
 
 行配置写在 profile 的 `cordis.patch.yml`
