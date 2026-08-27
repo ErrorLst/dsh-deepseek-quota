@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-08-26
+
+### Changed
+
+- **子代理明细卡片**：子代理名字（label，缺失时回退到 id）与模型名超长时
+  按与模型列相同的上限（16 字符）**截断显示省略号**，完整名字保留在单元格
+  title（悬停可见）；截断逻辑抽为通用 `truncateLong`，与「本轮对话」模型列
+  共用。
+
 ## [0.5.6] - 2026-08-26
 
 ### Fixed
