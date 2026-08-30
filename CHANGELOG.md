@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-09-05 (unreleased)
+
+### Changed
+
+- **DSH 0.1.2-alpha.1 兼容**：`dsh.client.inject` 移除已更名的 `@deepseek-ai/dsh-client-runtime`
+  （alpha.1 中更名 `@deepseek-ai/dsh-client-store`，客户端运行时是 shell 基线，不再作为
+  插件注入边声明；未知的旧包名会被 boot 图静默忽略，但会丢失模块到达边）。其余宿主/客户端
+  API（`webServer.register`、`sessions.list`、`sessionPersistence.list/inspect`、
+  `subagents.listDescendants`、`credentials.resolve`，客户端 `useProjection("tokenUsage")`/
+  `useSessions`/`useSession` 座席与 `conversation.composer.dock` 槽）经核对在 alpha.1 保持兼容，
+  无需改动。
+
 ## [0.5.7] - 2026-08-26
 
 ### Changed
