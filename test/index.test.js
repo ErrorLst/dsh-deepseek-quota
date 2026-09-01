@@ -16,6 +16,8 @@ import { DatabaseSync } from "node:sqlite";
 
 // 测试绝不允许写入用户真实的 ~/.dsh/deepseek-quota 存储（绝对路径，避免 TEMP 缺失歧义）
 process.env.DSH_QUOTA_DATA_DIR = mkdtempSync(join(process.cwd(), ".dsh-quota-test-"));
+// 测试期间关闭启动后台预折叠（避免干扰 mock 计数）
+process.env.DSH_QUOTA_DISABLE_WARMUP = "1";
 
 import { name, inject, apply, cumulativeSpend, foldSessionUsage, isPeak, normalizePricing, resolveTier } from "../lib/index.js";
 

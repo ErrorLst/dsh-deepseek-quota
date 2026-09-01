@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-05 (unreleased)
+
+### Fixed
+
+- **切换会话后 context 额度记录 5-10s 才出的根因**：(a) 活跃会话之前每次计算
+  都是**在内存里全量折叠**整条事件列表（大会话几十万事件，每次数百 ms~数 s）；
+  (b) 首次访问从未算过的会话要全量解压日志。修复：
+  - **活会话内存增量折叠**：按事件数组引用建立状态，只在新增事件区间上折叠
+    （后续 30s 轮询/流式 2s 节流刷新变毫秒级）；事件数组被替换时自动全量重建；
+  - **启动后台预折叠**：最近活跃的 32 个会话在低优先级后台任务中预建检查点
+    落库（会话间让出事件循环），用户打开"最近用过的会话"时 context 零等待；
+    可用 `DSH_QUOTA_DISABLE_WARMUP=1` 关闭。
+
 ## [0.5.9] - 2026-09-05 (unreleased)
 
 ### Changed
