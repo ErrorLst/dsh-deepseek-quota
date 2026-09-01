@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **折叠增量检查点（性能）**：context / spend 不再每次全量重放日志——
+  用持久化服务的 `listSnapshots()`（廉价 per-log revision）做变更检测，
+  revision 未变的会话**零读**；已变的会话用 `readFrom(id, fromSeq)`
+  只折叠增量（水位线 := 上次折叠的 seq + 1）。检查点按会话保存
+  `~/.dsh/deepseek-quota/checkpoints.json`（防抖批量写，失败静默回退全量），
+  重启后仍增量。效果：首建完成后 context/spend 刷新从「全量重放（8s/30s 预算
+  常触发、partial、当前API 显示 0）」变为毫秒级增量；旧版 harness 无
+  `listSnapshots/readFrom` 时自动回退全量路径。
 - **DSH 0.1.2-alpha.1 兼容**：`dsh.client.inject` 移除已更名的 `@deepseek-ai/dsh-client-runtime`
   （alpha.1 中更名 `@deepseek-ai/dsh-client-store`，客户端运行时是 shell 基线，不再作为
   插件注入边声明；未知的旧包名会被 boot 图静默忽略，但会丢失模块到达边）。其余宿主/客户端

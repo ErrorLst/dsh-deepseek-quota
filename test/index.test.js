@@ -714,6 +714,59 @@ test("spend route returns cumulative DeepSeek spend across every session", async
   assert.equal(Math.round((body.boundaries[3].cost - body.boundaries[1].cost) * 1e6), 4500);
 });
 
+test("fold checkpoint: unchanged revision zero-read; changed revision folds only the delta", async () => {
+  // First call folds the base log fully (inspect); revision r1 stays cached
+  // with zero further reads; after r2 the delta (seq >= watermark) is folded
+  // instead of re-inspecting the whole log.
+  const base = [
+    headerEvent("deepseek-chat", "deepseek", 0),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, PEAK_MS),
+  ];
+  const tail = [
+    usageMessageEvent(2, 1, 0, { inputTokens: 300, outputTokens: 150 }, OFFPEAK_MS),
+    usageMessageEvent(3, 1, 1, { inputTokens: 200, outputTokens: 100 }, OFFPEAK_MS),
+  ];
+  let revision = "r1";
+  let allEvents = [...base];
+  let inspectCalls = 0;
+  const readFromCalls = [];
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: "cold" }, revision }],
+    readFrom: async (id, fromSeq) => {
+      readFromCalls.push(fromSeq);
+      return { meta: { id, seedLength: 0 }, events: allEvents.filter((e) => e.seq >= fromSeq) };
+    },
+    inspect: async (id) => {
+      inspectCalls += 1;
+      return { meta: { id, seedLength: 0 }, events: allEvents };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const url = "/api/deepseek-quota/context?sessionId=cold&refresh=1";
+
+  const first = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(first.ok, true);
+  assert.equal(first.session.steps, 1, "first full fold sees only the base sample");
+  assert.equal(inspectCalls, 1, "first fold uses inspect (full)");
+  assert.equal(readFromCalls.length, 0);
+
+  const second = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(second.ok, true);
+  assert.equal(second.session.steps, 1);
+  assert.equal(inspectCalls, 1, "unchanged revision must not re-read");
+  assert.equal(readFromCalls.length, 0, "unchanged revision: no readFrom either");
+
+  revision = "r2";
+  allEvents = base.concat(tail);
+  const third = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(third.ok, true);
+  assert.equal(third.session.steps, 3, "delta merges the two new samples");
+  assert.equal(inspectCalls, 1, "changed revision must not re-inspect");
+  assert.deepEqual(readFromCalls, [2], "delta read starts at the fold watermark (2)");
+});
+
 test("spend route tolerates an empty session set and drops invalid boundaries", async () => {
   const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence: undefined });
   apply(ctx);
