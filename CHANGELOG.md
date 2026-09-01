@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-09-05 (unreleased)
+
+### Changed
+
+- **折叠检查点存储改为 SQLite（node:sqlite，零原生依赖）**：冷启动
+  `SELECT` 全量装载到内存表；热对话每个会话折叠后**逐行 upsert**（WAL，亚毫秒），
+  不再整文件重写/防抖。数据库：`~/.dsh/deepseek-quota/quota.db`，
+  表 `session_folds(session_id PK, revision, created_at, cwd, from_seq,
+  last_provider, last_model, started_turn, samples, updated_at)`。旧的
+  JSON 检查点路径移除；若运行 Node 不支持 node:sqlite（<22.5），插件退化为
+  仅内存折叠（结果仍正确，重启后自动重建）。测试数据目录可用
+  `DSH_QUOTA_DATA_DIR` 指定。
+
 ## [0.5.8] - 2026-09-05 (unreleased)
 
 ### Changed

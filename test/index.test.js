@@ -9,6 +9,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+// 测试绝不允许写入用户真实的 ~/.dsh/deepseek-quota 存储（绝对路径，避免 TEMP 缺失歧义）
+process.env.DSH_QUOTA_DATA_DIR = mkdtempSync(join(process.cwd(), ".dsh-quota-test-"));
 
 import { name, inject, apply, cumulativeSpend, foldSessionUsage, isPeak, normalizePricing, resolveTier } from "../lib/index.js";
 
@@ -765,6 +772,16 @@ test("fold checkpoint: unchanged revision zero-read; changed revision folds only
   assert.equal(third.session.steps, 3, "delta merges the two new samples");
   assert.equal(inspectCalls, 1, "changed revision must not re-inspect");
   assert.deepEqual(readFromCalls, [2], "delta read starts at the fold watermark (2)");
+
+  // sqlite 持久化断言：单会话行已写入，且保存的是增量合并后的水位线
+  const probePath = join(process.env.DSH_QUOTA_DATA_DIR, "quota.db");
+  const probe = new DatabaseSync(probePath);
+  const row = probe.prepare("SELECT session_id, revision, from_seq, samples FROM session_folds WHERE session_id = ?").get("cold");
+  probe.close();
+  assert.ok(row !== undefined, "checkpoint row persisted to sqlite");
+  assert.equal(row.revision, "r2");
+  assert.equal(row.from_seq, 4, "watermark advanced past the delta (maxSeq 3 + 1)");
+  assert.equal(JSON.parse(row.samples).length, 3, "the three merged samples are stored");
 });
 
 test("fold checkpoint: a recreated log identity discards the stale checkpoint", async () => {

@@ -1,17 +1,2 @@
-# dependencies
-node_modules/
-
-# npm artifacts
-*.tgz
-*.log
-npm-debug.log*
-
-# test / coverage
-coverage/
-.tmp/
-
-# editors & OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+node_modules
+.dsh-quota-test-*
