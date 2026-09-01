@@ -767,6 +767,66 @@ test("fold checkpoint: unchanged revision zero-read; changed revision folds only
   assert.deepEqual(readFromCalls, [2], "delta read starts at the fold watermark (2)");
 });
 
+test("fold checkpoint: a recreated log identity discards the stale checkpoint", async () => {
+  // id 只代表槽位：同一 id 下 createdAt 变化 = 全新日志，旧检查点（含样本与
+  // fromSeq 水位线）必须整体丢弃 → 全量重算，绝不能把无关日志的样本误折叠。
+  const oldEvents = [
+    headerEvent("deepseek-chat", "deepseek", 0),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, PEAK_MS),
+  ];
+  const newEvents = [
+    headerEvent("deepseek-reasoner", "deepseek", 0),
+    usageMessageEvent(1, 0, 0, { inputTokens: 10, outputTokens: 5 }, PEAK_MS),
+  ];
+  let revision = "r1";
+  let identity = { createdAt: 111, cwd: "C:/old" };
+  let allEvents = [...oldEvents];
+  let inspectCalls = 0;
+  const readFromCalls = [];
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: "re", ...identity }, revision }],
+    readFrom: async (id, fromSeq) => {
+      readFromCalls.push(fromSeq);
+      return { meta: { id, ...identity }, events: allEvents.filter((e) => e.seq >= fromSeq) };
+    },
+    inspect: async (id) => {
+      inspectCalls += 1;
+      return { meta: { id, ...identity, seedLength: 0 }, events: allEvents };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const url = "/api/deepseek-quota/context?sessionId=re&refresh=1";
+
+  const first = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(first.ok, true);
+  assert.equal(first.session.steps, 1);
+  assert.equal(inspectCalls, 1);
+
+  // 同身份 + 增量 → 零读路径（2 个新样本经 delta 并入）
+  revision = "r2";
+  identity = { createdAt: 111, cwd: "C:/old" };
+  allEvents = oldEvents.concat([
+    usageMessageEvent(2, 1, 0, { inputTokens: 300, outputTokens: 150 }, OFFPEAK_MS),
+  ]);
+  const second = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(second.ok, true);
+  assert.equal(second.session.steps, 2, "same identity appends via delta");
+  assert.equal(inspectCalls, 1);
+  assert.deepEqual(readFromCalls, [2], "delta watermark advanced to 2");
+
+  // 重新创建：同一 id、新 createdAt → 旧检查点必须作废 → inspect 全量重算
+  revision = "r3";
+  identity = { createdAt: 222, cwd: "C:/new" };
+  allEvents = [...newEvents];
+  const third = JSON.parse((await invoke(context, { url })).body);
+  assert.equal(third.ok, true);
+  assert.equal(third.session.steps, 1, "recreated log folds from scratch");
+  assert.equal(inspectCalls, 2, "identity mismatch must re-inspect");
+  assert.deepEqual(readFromCalls, [2], "no delta read off a discarded checkpoint");
+});
+
 test("spend route tolerates an empty session set and drops invalid boundaries", async () => {
   const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence: undefined });
   apply(ctx);

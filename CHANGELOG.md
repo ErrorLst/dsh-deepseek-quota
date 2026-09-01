@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   重启后仍增量。效果：首建完成后 context/spend 刷新从「全量重放（8s/30s 预算
   常触发、partial、当前API 显示 0）」变为毫秒级增量；旧版 harness 无
   `listSnapshots/readFrom` 时自动回退全量路径。
+- **检查点日志身份校验 + 已删除会话清理**：检查点携带日志身份
+  （`createdAt + cwd`，对齐 session-projection-cache 的 checkpointIdentity）。
+  会话删除后重建/日志被整个替换时，身份不一致 → 丢弃旧检查点回退全量
+  （只慢不错），杜绝"无关日志的样本被水位线增量误折叠"；spend/context
+  计算时同步清出已删除会话的检查点（含磁盘冗余）。
 - **DSH 0.1.2-alpha.1 兼容**：`dsh.client.inject` 移除已更名的 `@deepseek-ai/dsh-client-runtime`
   （alpha.1 中更名 `@deepseek-ai/dsh-client-store`，客户端运行时是 shell 基线，不再作为
   插件注入边声明；未知的旧包名会被 boot 图静默忽略，但会丢失模块到达边）。其余宿主/客户端
