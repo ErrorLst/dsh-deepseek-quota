@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-09-05 (unreleased)
+
+### Fixed
+
+- **适配 dsh 0.1.2-alpha.4 的 Session 事件读取契约**：alpha.4 移除了
+  `Session#events` getter（改为 `snapshotEvents()`，返回冻结缓存数组）并把
+  逻辑头里的 `seedLength` 换成 `isSeeded` + `Session#inheritedEventCount`。
+  未适配时：活会话折叠读到空事件（当前会话花费显示 ¥0）、子代理会话把
+  继承前缀重复计费。此版本按能力探测双版本兼容——活会话与冷会话均恢复。
+  - 活会话：`snapshotEvents()`（引用稳定，增量折叠判定不受影响）；
+  - 冷会话：`inspect` 返回的 `inheritedEventCount` 作为继承前缀水位；
+  - alpha.3 宿主上保持旧行为（`.events` / `header.seedLength` 回退）。
 ## [0.6.0] - 2026-09-05 (unreleased)
 
 ### Fixed

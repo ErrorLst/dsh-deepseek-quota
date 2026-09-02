@@ -514,6 +514,70 @@ test("context route splits session spend per model tier after a mid-session swit
   assert.equal(body.turn.requests[0].tier, "deepseek-reasoner");
 });
 
+test("alpha.4 Session shape: snapshotEvents + inheritedEventCount (unseeded live)", async () => {
+  // alpha.4 会话对象：无 .events getter、逻辑头无 seedLength；snapshotEvents()
+  // 返回冻结缓存数组（同一引用直到下次 append）。
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const session = {
+    header: { id: "a4-live", isSeeded: false },
+    inheritedEventCount: 0,
+    snapshotEvents() { return events; },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [session], subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=a4-live" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(Math.round(body.session.cost * 1e6), 375, "alpha.4 live session must fold");
+});
+
+test("alpha.4 seeded live session skips the inherited prefix (inheritedEventCount)", async () => {
+  // 子代理会话：前 2 个事件来自父会话（不得计入子会话），第 3 个才是自己的。
+  const events = [
+    headerEvent("deepseek-chat", "deepseek", 0),
+    usageMessageEvent(1, 0, 0, { inputTokens: 1000, outputTokens: 500 }, OFFPEAK_MS),
+    usageMessageEvent(2, 1, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const session = {
+    header: { id: "a4-child", isSeeded: true, parentSession: "parent" },
+    inheritedEventCount: 2,
+    snapshotEvents() { return events; },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [session], subagents: undefined });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=a4-child" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(Math.round(body.session.cost * 1e6), 375, "inherited prefix must not double count");
+});
+
+test("alpha.4 cold inspection shape: inheritedEventCount without meta.seedLength", async () => {
+  const coldEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: "a4-cold", isSeeded: false, createdAt: 1, cwd: "C:/x" }, revision: "r1" }],
+    inspect: async () => ({
+      meta: { id: "a4-cold", isSeeded: false, createdAt: 1, cwd: "C:/x" },
+      inheritedEventCount: 0,
+      events: coldEvents,
+    }),
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=a4-cold" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(Math.round(body.session.cost * 1e6), 375, "alpha.4 cold inspection folds via inheritedEventCount");
+});
+
 test("context route tolerates a missing subagents service", async () => {
   const events = [
     headerEvent("deepseek-chat"),
