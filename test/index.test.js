@@ -585,12 +585,15 @@ test("worktree handle seam cold fold: no inspect, open(read) + handle.read serve
     headerEvent("deepseek-chat"),
     usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
   ];
-  const calls = { opened: 0, closed: 0 };
+  const calls = { opened: 0, closed: 0, listArg: undefined };
   const persistence = {
     // 工作树 list() 直接返回快照形态（含 revision/sizeBytes），无 listSnapshots
-    list: async () => [
-      { header: { id: "hseam", createdAt: 7, cwd: "C:/x", isSeeded: false }, revision: "r1", sizeBytes: 100 },
-    ],
+    list: async (arg) => {
+      calls.listArg = arg;
+      return [
+        { header: { id: "hseam", createdAt: 7, cwd: "C:/x", isSeeded: false }, revision: "r1", sizeBytes: 100 },
+      ];
+    },
     open: async (id, access) => {
       calls.opened += 1;
       assert.equal(id, "hseam");
@@ -617,6 +620,52 @@ test("worktree handle seam cold fold: no inspect, open(read) + handle.read serve
   assert.equal(Math.round(body.session.cost * 1e6), 375, "handle read path must fold the cold log");
   assert.equal(calls.opened, 1, "the fold must open exactly one read handle");
   assert.equal(calls.closed, 1, "the read handle must be closed after folding");
+  // 工作树缝 list(options) 必须是 options 对象形态（位置参数 signal 会被后端忽略）
+  assert.ok(calls.listArg !== undefined && typeof calls.listArg === "object" && "signal" in calls.listArg,
+    "worktree list() must receive an options object, not a positional signal");
+  assert.equal(typeof calls.listArg.signal?.throwIfAborted, "function", "options.signal must carry the AbortSignal");
+});
+
+test("worktree handle seam: an absent session maps to SESSION_NOT_FOUND, not INTERNAL", async () => {
+  // 工作树缝无 inspect：未知/已删除 id 时 stat 探测返回 undefined → open 不应被
+  // 调用，fold 归一为 undefined → SESSION_NOT_FOUND（与 rc.1 inspect 一致）。
+  const persistence = {
+    list: async () => [],
+    stat: async () => undefined,
+    open: async () => {
+      assert.fail("open must not be reached when stat reports the session absent");
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=ghost" });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, "SESSION_NOT_FOUND");
+});
+
+test("worktree handle seam: open NotFound rejection folds as session absent", async () => {
+  // stat→open 竞态（stat 后会话被删除）：open 抛 SessionPersistenceNotFoundError
+  // 应归一为会话不存在，而不是穿透成 INTERNAL。
+  const persistence = {
+    list: async () => [],
+    stat: async () => ({ header: { id: "racer", createdAt: 1, cwd: "C:/x", isSeeded: false }, revision: "r1" }),
+    open: async () => {
+      const error = new Error('session "racer" not found');
+      error.name = "SessionPersistenceNotFoundError";
+      throw error;
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=racer" });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, "SESSION_NOT_FOUND");
 });
 
 test("context route tolerates a missing subagents service", async () => {
@@ -836,10 +885,14 @@ test("spend route folds sessions listed in snapshot shape (header + revision + s
     headerEvent("deepseek-reasoner"),
     usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, PEAK_MS), // 0.00225
   ];
+  let listArg;
   const persistence = {
-    list: async () => [
-      { header: { id: "snap-cold", createdAt: 5, cwd: "C:/x", isSeeded: false }, revision: "r9", sizeBytes: 4096 },
-    ],
+    list: async (arg) => {
+      listArg = arg;
+      return [
+        { header: { id: "snap-cold", createdAt: 5, cwd: "C:/x", isSeeded: false }, revision: "r9", sizeBytes: 4096 },
+      ];
+    },
     inspect: async (id) => {
       assert.equal(id, "snap-cold");
       return { meta: { id: "snap-cold", createdAt: 5, cwd: "C:/x", isSeeded: false }, inheritedEventCount: 0, events: coldEvents };
@@ -855,6 +908,61 @@ test("spend route folds sessions listed in snapshot shape (header + revision + s
   assert.equal(body.sessions, 1, "snapshot-shaped list entry must fold instead of being dropped");
   assert.equal(body.samples, 1);
   assert.equal(Math.round(body.boundaries[0].cost * 1e6), 2250, "cold reasoner peak 100 in + 50 out");
+  // rc.1 缝（无 open）list(signal) 是位置参数 AbortSignal
+  assert.equal(typeof listArg?.throwIfAborted, "function", "rc.1 list() must receive the positional AbortSignal");
+});
+
+test("spend route keeps checkpoints when listing fails (no false deletion; zero-read still serves)", async () => {
+  // 列举失败/中止（如 spend 超时 throwIfAborted、artifact stat 瞬时错误）时
+  // 空列表不代表会话已删除：不得销毁内存 + sqlite 检查点。恢复后 revision
+  // 一致应直接零读命中检查点（工作树宿主无 readFrom 也成立）。
+  const events = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, PEAK_MS),
+  ];
+  let failList = false;
+  let inspectCalls = 0;
+  const persistence = {
+    list: async () => {
+      if (failList) throw new Error("artifact stat exploded (EBUSY-like)");
+      return [
+        { header: { id: "kept", createdAt: 9, cwd: "C:/x", isSeeded: false }, revision: "r1", sizeBytes: 64 },
+      ];
+    },
+    inspect: async (id) => {
+      inspectCalls += 1;
+      assert.equal(id, "kept");
+      return { meta: { id: "kept", createdAt: 9, cwd: "C:/x", isSeeded: false }, inheritedEventCount: 0, events };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const url = "/api/deepseek-quota/spend?boundaries=" + [PEAK_MS + 1000].join(",");
+
+  const first = JSON.parse((await invoke(spend, { url })).body);
+  assert.equal(first.ok, true);
+  assert.equal(first.sessions, 1, "first enumeration folds the cold session and builds its checkpoint");
+  assert.equal(inspectCalls, 1);
+
+  // 列举失败：旧实现以空 alive 集合把全部检查点（内存 + sqlite 行）销毁
+  failList = true;
+  const failing = JSON.parse((await invoke(spend, { url: url + "&refresh=1" })).body);
+  assert.equal(failing.ok, true);
+
+  const probePath = join(process.env.DSH_QUOTA_DATA_DIR, "quota.db");
+  const probe = new DatabaseSync(probePath);
+  const row = probe.prepare("SELECT session_id, revision FROM session_folds WHERE session_id = ?").get("kept");
+  probe.close();
+  assert.ok(row !== undefined, "failed listing must not destroy the persisted checkpoint");
+  assert.equal(row.revision, "r1");
+
+  // 列举恢复：revision 未变 → 零读命中（不再 inspect / 不再全量重读）
+  failList = false;
+  const third = JSON.parse((await invoke(spend, { url: url + "&refresh=1" })).body);
+  assert.equal(third.ok, true);
+  assert.equal(third.sessions, 1);
+  assert.equal(inspectCalls, 1, "unchanged revision must hit the zero-read path after the failure");
 });
 
 test("fold checkpoint: unchanged revision zero-read; changed revision folds only the delta", async () => {
