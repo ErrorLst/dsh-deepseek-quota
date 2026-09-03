@@ -578,6 +578,47 @@ test("alpha.4 cold inspection shape: inheritedEventCount without meta.seedLength
   assert.equal(Math.round(body.session.cost * 1e6), 375, "alpha.4 cold inspection folds via inheritedEventCount");
 });
 
+test("worktree handle seam cold fold: no inspect, open(read) + handle.read serves the log", async () => {
+  // 工作树 handle 缝：无 inspect/listSnapshots/readFrom，只有 open + handle；
+  // 折叠路径必须走 open(id, 'read') + handle.read() 全量读，读毕 close。
+  const coldEvents = [
+    headerEvent("deepseek-chat"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, OFFPEAK_MS),
+  ];
+  const calls = { opened: 0, closed: 0 };
+  const persistence = {
+    // 工作树 list() 直接返回快照形态（含 revision/sizeBytes），无 listSnapshots
+    list: async () => [
+      { header: { id: "hseam", createdAt: 7, cwd: "C:/x", isSeeded: false }, revision: "r1", sizeBytes: 100 },
+    ],
+    open: async (id, access) => {
+      calls.opened += 1;
+      assert.equal(id, "hseam");
+      assert.equal(access, "read");
+      return {
+        id,
+        header: { id: "hseam", createdAt: 7, cwd: "C:/x", isSeeded: false },
+        inheritedEventCount: 0,
+        async read(offset, length) {
+          assert.equal(offset, undefined, "full read must not pass an offset");
+          assert.equal(length, undefined, "full read must not cap the length");
+          return coldEvents;
+        },
+        async close() { calls.closed += 1; },
+      };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const context = routes.find((route) => route.path === "/api/deepseek-quota/context");
+  const res = await invoke(context, { url: "/api/deepseek-quota/context?sessionId=hseam" });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(Math.round(body.session.cost * 1e6), 375, "handle read path must fold the cold log");
+  assert.equal(calls.opened, 1, "the fold must open exactly one read handle");
+  assert.equal(calls.closed, 1, "the read handle must be closed after folding");
+});
+
 test("context route tolerates a missing subagents service", async () => {
   const events = [
     headerEvent("deepseek-chat"),
@@ -785,6 +826,35 @@ test("spend route returns cumulative DeepSeek spend across every session", async
   assert.equal(Math.round(body.boundaries[3].cost * 1e6), 14250);
   // Window (b1, b3] = off-peak + child = 0.00375 + 0.00075
   assert.equal(Math.round((body.boundaries[3].cost - body.boundaries[1].cost) * 1e6), 4500);
+});
+
+test("spend route folds sessions listed in snapshot shape (header + revision + sizeBytes)", async () => {
+  // 工作树 handle 缝：无 listSnapshots，list() 直接返回快照形态
+  // [{ header, revision, sizeBytes }]。未归一化时快照条目被当裸 header 读
+  // （h.id 缺失）→ 该会话被静默丢弃、样本全部漏计。
+  const coldEvents = [
+    headerEvent("deepseek-reasoner"),
+    usageMessageEvent(1, 0, 0, { inputTokens: 100, outputTokens: 50 }, PEAK_MS), // 0.00225
+  ];
+  const persistence = {
+    list: async () => [
+      { header: { id: "snap-cold", createdAt: 5, cwd: "C:/x", isSeeded: false }, revision: "r9", sizeBytes: 4096 },
+    ],
+    inspect: async (id) => {
+      assert.equal(id, "snap-cold");
+      return { meta: { id: "snap-cold", createdAt: 5, cwd: "C:/x", isSeeded: false }, inheritedEventCount: 0, events: coldEvents };
+    },
+  };
+  const { ctx, routes } = makeServiceCtx({ sessions: [], subagents: undefined, persistence });
+  apply(ctx);
+  const spend = routes.find((route) => route.path === "/api/deepseek-quota/spend");
+  const url = "/api/deepseek-quota/spend?boundaries=" + [PEAK_MS + 1000].join(",");
+  const res = await invoke(spend, { url });
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.sessions, 1, "snapshot-shaped list entry must fold instead of being dropped");
+  assert.equal(body.samples, 1);
+  assert.equal(Math.round(body.boundaries[0].cost * 1e6), 2250, "cold reasoner peak 100 in + 50 out");
 });
 
 test("fold checkpoint: unchanged revision zero-read; changed revision folds only the delta", async () => {

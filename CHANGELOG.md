@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-09-05 (unreleased)
+
+### Changed
+
+- **sessionPersistence 只读路径双版本兼容（dsh 0.1.2-rc.1 缝 + 工作树 handle
+  缝）**：新版 harness 把持久化服务重构为 handle-based seam——list() 直接返回
+  带 revision/sizeBytes 的快照形态、inspect/listSnapshots/readFrom 移除、
+  改由 open(id, "read") + SessionHandle.read() 读全量事件。此版本按能力探测
+  双版本兼容，只读折叠路径两种宿主下均恢复：
+  - **normalizePersistenceList 列举归一**：优先 listSnapshots()，否则 list()
+    后逐项归一为 {header, revision, sizeBytes}——rc.1 的 list() 返回裸
+    SessionHeader（header 自身即条目）、工作树的 list() 返回快照形态（header
+    在 h.header 上）。未归一前工作树宿主上 spend/预折叠把快照条目当裸头读
+    （h.id 缺失）会静默丢弃全部持久化会话；
+  - **foldSessionCached 全量回退链**：inspect（rc.1 缝）→ open(id, "read",
+    { signal }) + handle.read() 读全量后 close()（工作树 handle 缝，事件数组
+    来自 handle.read(undefined, undefined)，继承水位取 handle.inheritedEventCount）
+    → 两者皆无返回 undefined（冷会话不可用，不抛异常）；
+  - **预折叠排序键**：Number(header.createdAt) || Number(header.updatedAt) || 0
+    （rc.1 的 SessionHeader 无 updatedAt，原排序键恒为 0，「最近更新优先」失效）；
+  - engines.dsh 提升到 >=0.1.2-rc.1。
+
 ## [0.6.1] - 2026-09-05 (unreleased)
 
 ### Fixed
